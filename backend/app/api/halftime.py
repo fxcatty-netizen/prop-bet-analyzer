@@ -15,8 +15,13 @@ from app.models.user import User
 from app.models.live_analysis import LiveAnalysisSnapshot, LivePropSuggestion
 from app.services.live_data_client import live_data_client, LivePlayerStats
 from app.services.balldontlie import balldontlie_service
-from app.core.halftime_engine import halftime_engine
+from app.services.bdl_analytics import BDLAnalytics
+from app.core.halftime_engine import HalftimeAnalysisEngine
 from app.core.game_totals_engine import GameTotalsEngine
+
+# Initialize BDL analytics and inject into halftime engine
+bdl_analytics = BDLAnalytics(balldontlie_service)
+halftime_engine = HalftimeAnalysisEngine(bdl_analytics=bdl_analytics)
 from app.schemas.halftime import (
     LiveGameResponse,
     LiveBoxScoreResponse,
@@ -317,7 +322,8 @@ async def get_game_totals_analysis(
         # Run enhanced totals analysis
         totals_engine = GameTotalsEngine(
             live_client=live_data_client,
-            bdl_service=balldontlie_service
+            bdl_service=balldontlie_service,
+            bdl_analytics=bdl_analytics
         )
         result = await totals_engine.analyze(
             game_data, box_score, home_ratings, away_ratings,

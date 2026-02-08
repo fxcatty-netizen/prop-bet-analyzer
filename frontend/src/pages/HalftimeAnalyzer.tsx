@@ -890,6 +890,9 @@ export default function HalftimeAnalyzer() {
                             <th className="text-right py-2 px-2">Proj</th>
                             <th className="text-right py-2 px-2">Line</th>
                             <th className="text-right py-2 px-2">Edge</th>
+                            <th className="text-center py-2 px-2">Hit Rate</th>
+                            <th className="text-center py-2 px-2">Trend</th>
+                            <th className="text-center py-2 px-2">Consist.</th>
                             <th className="text-center py-2 px-2">Conf</th>
                             <th className="text-center py-2 px-2">Rec</th>
                             <th className="text-center py-2 px-2">Risk</th>
@@ -908,6 +911,38 @@ export default function HalftimeAnalyzer() {
                               <td className="py-2 px-2 text-right">{player.prop_line}</td>
                               <td className={`py-2 px-2 text-right font-medium ${player.distance_from_line >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                                 {player.distance_from_line >= 0 ? '+' : ''}{player.distance_from_line}
+                              </td>
+                              <td className="py-2 px-2 text-center">
+                                {player.hit_rate_last_10 != null ? (
+                                  <span className={`text-xs font-medium ${player.hit_rate_last_10 >= 60 ? 'text-green-600' : player.hit_rate_last_10 >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>
+                                    {player.hit_rate_hits ?? 0}/{player.hit_rate_games ?? 0}
+                                    <span className="block text-[10px]">{player.hit_rate_last_10}%</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-gray-400">--</span>
+                                )}
+                              </td>
+                              <td className="py-2 px-2 text-center">
+                                {player.trend_direction ? (
+                                  <span className={`text-sm font-bold ${player.trend_direction === 'up' ? 'text-green-600' : player.trend_direction === 'down' ? 'text-red-600' : 'text-gray-500'}`}>
+                                    {player.trend_direction === 'up' ? '\u2191' : player.trend_direction === 'down' ? '\u2193' : '\u2192'}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-gray-400">--</span>
+                                )}
+                              </td>
+                              <td className="py-2 px-2 text-center">
+                                {player.consistency_label ? (
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                    player.consistency_label === 'high' ? 'bg-green-100 text-green-700' :
+                                    player.consistency_label === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                                    'bg-red-100 text-red-700'
+                                  }`}>
+                                    {player.consistency_label.toUpperCase()}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-gray-400">--</span>
+                                )}
                               </td>
                               <td className="py-2 px-2 text-center">
                                 <span className={`font-bold ${getConfidenceColor(player.confidence_score)}`}>

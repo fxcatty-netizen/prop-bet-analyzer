@@ -425,6 +425,22 @@ export interface HalftimePlayerAnalysis {
   assist_to_turnover?: number;
   shooting_efficiency?: number;
 
+  // BDL Analytics
+  hit_rate_last_10?: number;
+  hit_rate_hits?: number;
+  hit_rate_games?: number;
+  recent_trend?: number;
+  trend_direction?: string;
+  consistency_score?: number;
+  consistency_label?: string;
+  positional_defense?: {
+    position: string;
+    rating: string;
+    avg_points_allowed: number;
+    avg_rebounds_allowed: number;
+    avg_assists_allowed: number;
+  };
+
   analysis_notes?: string;
 }
 

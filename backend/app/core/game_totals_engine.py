@@ -190,17 +190,19 @@ class GameTotalsEngine:
     and star utilization (0.20) per user requirements.
     """
 
-    def __init__(self, live_client, bdl_service=None):
+    def __init__(self, live_client, bdl_service=None, bdl_analytics=None):
         self.live_client = live_client
         self.bdl_service = bdl_service
+        self.bdl_analytics = bdl_analytics
         self._season_stats_cache: Dict[int, Optional[Dict]] = {}
 
     async def _get_player_season_stats(self, player_id: int, player_name: str) -> Optional[Dict]:
-        """Get player season stats using nba_api (cached per analysis run)."""
+        """Get player season stats using nba_api with BDL fallback (cached per analysis run)."""
         if player_id in self._season_stats_cache:
             return self._season_stats_cache[player_id]
 
         stats = None
+        # Try nba_api first
         try:
             raw = await self.live_client.get_player_season_stats(player_id)
             if raw:
@@ -212,7 +214,23 @@ class GameTotalsEngine:
                     'min': raw.get('avg_minutes', 0),
                 }
         except Exception as e:
-            logger.debug(f"Could not fetch season stats for {player_name} ({player_id}): {e}")
+            logger.debug(f"nba_api season stats failed for {player_name} ({player_id}): {e}")
+
+        # BDL fallback
+        if stats is None and self.bdl_analytics:
+            try:
+                bdl = await self.bdl_analytics.get_player_season_avg(player_name)
+                if bdl:
+                    stats = {
+                        'pts': bdl.get('pts', 0),
+                        'fg_pct': bdl.get('fg_pct', 0),
+                        'fg3_pct': bdl.get('fg3_pct', 0),
+                        'ft_pct': bdl.get('ft_pct', 0),
+                        'min': bdl.get('min', 0),
+                    }
+                    logger.info(f"Used BDL fallback for {player_name} season stats")
+            except Exception as e:
+                logger.debug(f"BDL season stats also failed for {player_name}: {e}")
 
         self._season_stats_cache[player_id] = stats
         return stats

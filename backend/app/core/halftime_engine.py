@@ -20,6 +20,7 @@ import asyncio
 from app.services.live_data_client import (
     LiveDataClient, LiveGameData, LivePlayerStats, live_data_client
 )
+from app.services.bdl_analytics import BDLAnalytics, PlayerTrendAnalysis, PositionalDefense
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,16 @@ class PlayerProjection:
     plus_minus: int = 0
     shooting_efficiency: Optional[float] = None
 
+    # BDL analytics fields
+    hit_rate_last_10: Optional[float] = None
+    hit_rate_hits: Optional[int] = None
+    hit_rate_games: Optional[int] = None
+    recent_trend: Optional[float] = None
+    trend_direction: Optional[str] = None
+    consistency_score: Optional[float] = None
+    consistency_label: Optional[str] = None
+    positional_defense: Optional[Dict[str, Any]] = None
+
 
 @dataclass
 class GameTotalProjection:
@@ -179,8 +190,9 @@ class GameTotalProjection:
 class HalftimeAnalysisEngine:
     """Engine for analyzing live NBA games at halftime."""
 
-    def __init__(self, live_client: Optional[LiveDataClient] = None):
+    def __init__(self, live_client: Optional[LiveDataClient] = None, bdl_analytics: Optional[BDLAnalytics] = None):
         self.live_client = live_client or live_data_client
+        self.bdl_analytics = bdl_analytics
         self._team_ratings_cache: Dict[int, TeamRatings] = {}
 
     def _get_stat_value(self, stats: LivePlayerStats, prop_type: str) -> float:
@@ -438,9 +450,28 @@ class HalftimeAnalysisEngine:
                 ratings.def_rank_3pm = int(team_def['3PM_RANK'].iloc[0]) if '3PM_RANK' in team_def else 15
 
         except asyncio.TimeoutError:
-            logger.warning(f"Timeout fetching team ratings for {team_abbr} - using defaults")
+            logger.warning(f"Timeout fetching team ratings for {team_abbr} - trying BDL fallback")
         except Exception as e:
-            logger.warning(f"Could not fetch team ratings for {team_abbr}: {e}")
+            logger.warning(f"Could not fetch team ratings for {team_abbr} via nba_api: {e}")
+
+        # BDL fallback: use recent game data for ratings
+        if self.bdl_analytics and ratings.off_rating == LEAGUE_AVG_OFF_RTG:
+            try:
+                bdl_ratings = await self.bdl_analytics.get_team_ratings(team_id, team_abbr)
+                if bdl_ratings.games_sampled > 0:
+                    # Convert BDL points-based ratings to per-100-possession approximation
+                    ratings.off_rating = round(bdl_ratings.avg_points_scored * (100 / 48) * (48 / 100), 1)
+                    ratings.def_rating = round(bdl_ratings.avg_points_allowed * (100 / 48) * (48 / 100), 1)
+                    ratings.pace = round(bdl_ratings.avg_total / 2 * (100 / 48) * (48 / 100), 1)
+
+                    # Get defensive rank from BDL
+                    def_rank = await self.bdl_analytics.get_team_defensive_rank(team_id)
+                    if def_rank:
+                        ratings.def_rank_pts = def_rank.pts_rank
+
+                    logger.info(f"Used BDL fallback for {team_abbr} ratings: off={ratings.off_rating}, def={ratings.def_rating}")
+            except Exception as e:
+                logger.warning(f"BDL fallback also failed for {team_abbr}: {e}")
 
         self._team_ratings_cache[team_id] = ratings
         return ratings
@@ -788,7 +819,7 @@ class HalftimeAnalysisEngine:
         opp_ratings = await self._get_team_ratings(opponent_team_id, opponent_abbr)
         opponent_def_rank = self._get_opponent_def_rank_for_stat(opp_ratings, prop_type)
 
-        # Get historical data
+        # Get historical data (nba_api with BDL fallback)
         historical_2h_avg = None
         season_avg = None
         try:
@@ -805,6 +836,44 @@ class HalftimeAnalysisEngine:
                     historical_2h_avg = season_stats.get('second_half_avg_assists')
         except Exception as e:
             logger.warning(f"Could not fetch historical stats for {live_stats.player_name}: {e}")
+
+        # BDL fallback for season averages
+        if season_avg is None and self.bdl_analytics:
+            try:
+                bdl_avg = await self.bdl_analytics.get_player_season_avg(live_stats.player_name)
+                if bdl_avg:
+                    stat_key = {'points': 'pts', 'rebounds': 'reb', 'assists': 'ast'}.get(prop_type)
+                    if stat_key:
+                        season_avg = bdl_avg.get(stat_key)
+                        if season_avg:
+                            historical_2h_avg = season_avg * 0.48  # Approximate 2H share
+            except Exception as e:
+                logger.debug(f"BDL season avg fallback failed for {live_stats.player_name}: {e}")
+
+        # BDL trend analysis (hit rate, trend, consistency)
+        bdl_trend = None
+        if self.bdl_analytics:
+            try:
+                bdl_trend = await self.bdl_analytics.get_player_trend_analysis(
+                    live_stats.player_name, prop_type, prop_line
+                )
+            except Exception as e:
+                logger.debug(f"BDL trend analysis failed for {live_stats.player_name}: {e}")
+
+        # BDL positional defense
+        bdl_pos_defense = None
+        if self.bdl_analytics:
+            try:
+                # Determine player position from BDL
+                bdl_avg_data = await self.bdl_analytics.get_player_season_avg(live_stats.player_name)
+                position = "F"  # default
+                if bdl_avg_data:
+                    position = self.bdl_analytics.get_position_group(bdl_avg_data.get("position", "F"))
+                bdl_pos_defense = await self.bdl_analytics.get_positional_defense(
+                    opponent_abbr, position
+                )
+            except Exception as e:
+                logger.debug(f"BDL positional defense failed: {e}")
 
         # Project minutes
         minutes_projection = self._calculate_minutes_projection(
@@ -850,6 +919,57 @@ class HalftimeAnalysisEngine:
             opponent_def_rank=opponent_def_rank,
             assist_to_turnover=assist_to_turnover
         )
+
+        # BDL confidence adjustments
+        if bdl_trend and bdl_trend.games_sampled >= 5:
+            # Hit rate boost: >70% hit rate = strong signal
+            if bdl_trend.hit_rate >= 70:
+                confidence += 10
+            elif bdl_trend.hit_rate >= 60:
+                confidence += 5
+            elif bdl_trend.hit_rate <= 30:
+                confidence -= 8
+            elif bdl_trend.hit_rate <= 40:
+                confidence -= 4
+
+            # Trend boost
+            if bdl_trend.trend_direction == "up" and projected_final > prop_line:
+                confidence += 6
+            elif bdl_trend.trend_direction == "down" and projected_final < prop_line:
+                confidence += 4
+            elif bdl_trend.trend_direction == "down" and projected_final > prop_line:
+                confidence -= 4
+
+            # Consistency boost
+            if bdl_trend.consistency >= 0.7:
+                confidence += 5
+            elif bdl_trend.consistency <= 0.3:
+                confidence -= 5
+
+            confidence = max(0, min(100, confidence))
+
+            # Recalculate recommendation with updated confidence
+            distance = projected_final - prop_line
+            if distance > 0:
+                if confidence >= 75:
+                    recommendation = "strong_bet"
+                elif confidence >= 65:
+                    recommendation = "bet"
+                elif confidence >= 55:
+                    recommendation = "lean"
+                elif confidence >= 45:
+                    recommendation = "neutral"
+                else:
+                    recommendation = "avoid"
+            else:
+                if confidence <= 25:
+                    recommendation = "strong_avoid"
+                elif confidence <= 35:
+                    recommendation = "avoid"
+                elif confidence <= 45:
+                    recommendation = "neutral"
+                else:
+                    recommendation = "lean"
 
         # Build enhanced factors breakdown
         shot_volume_factor = self._calculate_shot_volume_factor(
@@ -908,7 +1028,22 @@ class HalftimeAnalysisEngine:
             season_average=round(season_avg, 1) if season_avg else None,
             second_half_historical_avg=round(historical_2h_avg, 1) if historical_2h_avg else None,
             plus_minus=live_stats.plus_minus,
-            shooting_efficiency=shooting_metrics.ts_pct
+            shooting_efficiency=shooting_metrics.ts_pct,
+            # BDL analytics
+            hit_rate_last_10=bdl_trend.hit_rate if bdl_trend else None,
+            hit_rate_hits=bdl_trend.hits if bdl_trend else None,
+            hit_rate_games=bdl_trend.games_sampled if bdl_trend else None,
+            recent_trend=bdl_trend.recent_trend if bdl_trend else None,
+            trend_direction=bdl_trend.trend_direction if bdl_trend else None,
+            consistency_score=bdl_trend.consistency if bdl_trend else None,
+            consistency_label=bdl_trend.consistency_label if bdl_trend else None,
+            positional_defense={
+                'position': bdl_pos_defense.position,
+                'rating': bdl_pos_defense.rating,
+                'avg_pts_allowed': bdl_pos_defense.avg_points_allowed,
+                'avg_reb_allowed': bdl_pos_defense.avg_rebounds_allowed,
+                'avg_ast_allowed': bdl_pos_defense.avg_assists_allowed,
+            } if bdl_pos_defense else None,
         )
 
     async def analyze_game_totals(
@@ -1087,6 +1222,16 @@ class HalftimeAnalysisEngine:
                     key_factors.append("Weak opponent defense")
                 if analysis.pace_factor >= 1.1:
                     key_factors.append("Fast pace game")
+                if analysis.hit_rate_last_10 is not None and analysis.hit_rate_last_10 >= 70:
+                    key_factors.append(f"Hits {analysis.hit_rate_last_10:.0f}% of last {analysis.hit_rate_games}")
+                if analysis.trend_direction == "up":
+                    key_factors.append("Trending up")
+                elif analysis.trend_direction == "down":
+                    key_factors.append("Trending down")
+                if analysis.consistency_label == "high":
+                    key_factors.append("Very consistent")
+                if analysis.positional_defense and analysis.positional_defense.get('rating') in ('poor', 'terrible'):
+                    key_factors.append(f"Weak {analysis.positional_defense['position']} defense")
                 if analysis.foul_trouble:
                     key_factors.append("Warning: Foul trouble")
                 if analysis.blowout_warning:
@@ -1122,7 +1267,8 @@ class HalftimeAnalysisEngine:
             from dataclasses import asdict
             totals_engine = GameTotalsEngine(
                 live_client=self.live_client,
-                bdl_service=balldontlie_service
+                bdl_service=balldontlie_service,
+                bdl_analytics=self.bdl_analytics
             )
             enhanced_result = await totals_engine.analyze(
                 game_data, box_score, home_ratings, away_ratings
@@ -1215,6 +1361,15 @@ class HalftimeAnalysisEngine:
                     'opponent_def_rank': a.opponent_def_rank,
                     'opponent_def_rating': a.opponent_def_rating,
                     'team_off_rating': a.team_off_rating,
+                    # BDL analytics
+                    'hit_rate_last_10': a.hit_rate_last_10,
+                    'hit_rate_hits': a.hit_rate_hits,
+                    'hit_rate_games': a.hit_rate_games,
+                    'recent_trend': a.recent_trend,
+                    'trend_direction': a.trend_direction,
+                    'consistency_score': a.consistency_score,
+                    'consistency_label': a.consistency_label,
+                    'positional_defense': a.positional_defense,
                 }
                 for a in player_analyses
             ],

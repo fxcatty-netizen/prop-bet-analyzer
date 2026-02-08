@@ -292,6 +292,78 @@ class BallDontLieService:
                 logger.warning(f"Failed to get season averages for player {pid}: {e}")
         return results
 
+    async def get_player_recent_stats(self, player_name: str, limit: int = 10) -> List[Dict]:
+        """
+        Search player by name then fetch their recent game stats.
+        Combines search_player + get_player_stats for convenience.
+
+        Returns list of game stat dicts with keys: pts, reb, ast, stl, blk, min, fg3m,
+        fg_pct, fg3_pct, ft_pct, turnover, game date, etc.
+        """
+        try:
+            player = await self.search_player(player_name)
+            if not player:
+                return []
+            player_id = player.get("id")
+            if not player_id:
+                return []
+            stats = await self.get_player_stats(player_id, limit=limit)
+            # Attach player position for positional defense lookups
+            for s in stats:
+                s["_position"] = player.get("position", "")
+            return stats
+        except Exception as e:
+            logger.warning(f"get_player_recent_stats failed for {player_name}: {e}")
+            return []
+
+    async def get_team_recent_games_with_scores(self, team_id: int, limit: int = 10) -> List[Dict]:
+        """
+        Get team's recent games WITH both team and opponent scores.
+        Each item has: team_score, opponent_score, is_home, date, opponent_id.
+        Used to compute offensive/defensive ratings.
+        """
+        try:
+            games = await self.get_team_recent_games(team_id, limit=limit)
+            results = []
+            for g in games:
+                home = g.get("home_team", {})
+                visitor = g.get("visitor_team", {})
+                home_id = home.get("id")
+                home_score = g.get("home_team_score", 0)
+                visitor_score = g.get("visitor_team_score", 0)
+
+                if home_id == team_id:
+                    results.append({
+                        "date": g.get("date", ""),
+                        "team_score": home_score,
+                        "opponent_score": visitor_score,
+                        "opponent_id": visitor.get("id"),
+                        "opponent_abbr": visitor.get("abbreviation", ""),
+                        "is_home": True,
+                    })
+                else:
+                    results.append({
+                        "date": g.get("date", ""),
+                        "team_score": visitor_score,
+                        "opponent_score": home_score,
+                        "opponent_id": home_id,
+                        "opponent_abbr": home.get("abbreviation", ""),
+                        "is_home": False,
+                    })
+            return results
+        except Exception as e:
+            logger.warning(f"get_team_recent_games_with_scores failed for team {team_id}: {e}")
+            return []
+
+    async def get_all_teams(self) -> List[Dict]:
+        """Get all NBA teams (cached)."""
+        try:
+            response = await self._cached_request("all_teams", "/v1/teams")
+            return response.get("data", [])
+        except Exception as e:
+            logger.warning(f"Failed to fetch all teams: {e}")
+            return []
+
     def clear_cache(self):
         """Clear the in-memory cache."""
         self._cache.clear()

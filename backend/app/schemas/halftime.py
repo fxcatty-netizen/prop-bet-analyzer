@@ -121,6 +121,16 @@ class HalftimePlayerAnalysisResponse(BaseModel):
     assist_to_turnover: Optional[float] = None
     shooting_efficiency: Optional[float] = None
 
+    # BDL Analytics
+    hit_rate_last_10: Optional[float] = None
+    hit_rate_hits: Optional[int] = None
+    hit_rate_games: Optional[int] = None
+    recent_trend: Optional[float] = None
+    trend_direction: Optional[str] = None
+    consistency_score: Optional[float] = None
+    consistency_label: Optional[str] = None
+    positional_defense: Optional[Dict[str, Any]] = None
+
     analysis_notes: Optional[str] = None
 
 
