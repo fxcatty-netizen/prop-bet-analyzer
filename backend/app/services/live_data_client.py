@@ -312,12 +312,16 @@ class LiveDataClient:
         """Get team's pace (possessions per 48 minutes)."""
         try:
             loop = asyncio.get_event_loop()
-            stats = await loop.run_in_executor(
-                None,
-                lambda: leaguedashteamstats.LeagueDashTeamStats(
-                    season=season,
-                    measure_type_detailed_defense='Base'
-                )
+            stats = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: leaguedashteamstats.LeagueDashTeamStats(
+                        season=season,
+                        measure_type_detailed_defense='Base',
+                        timeout=self.timeout
+                    )
+                ),
+                timeout=self.timeout + 2
             )
             df = stats.get_data_frames()[0]
             team_row = df[df['TEAM_ID'] == team_id]
@@ -332,12 +336,16 @@ class LiveDataClient:
         """Get player's season averages."""
         try:
             loop = asyncio.get_event_loop()
-            gamelog = await loop.run_in_executor(
-                None,
-                lambda: playergamelog.PlayerGameLog(
-                    player_id=player_id,
-                    season=season
-                )
+            gamelog = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: playergamelog.PlayerGameLog(
+                        player_id=player_id,
+                        season=season,
+                        timeout=self.timeout
+                    )
+                ),
+                timeout=self.timeout + 2
             )
             df = gamelog.get_data_frames()[0]
 
@@ -369,12 +377,16 @@ class LiveDataClient:
         """Get player's last N game logs."""
         try:
             loop = asyncio.get_event_loop()
-            gamelog = await loop.run_in_executor(
-                None,
-                lambda: playergamelog.PlayerGameLog(
-                    player_id=player_id,
-                    season=season
-                )
+            gamelog = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: playergamelog.PlayerGameLog(
+                        player_id=player_id,
+                        season=season,
+                        timeout=self.timeout
+                    )
+                ),
+                timeout=self.timeout + 2
             )
             df = gamelog.get_data_frames()[0]
 
@@ -407,13 +419,17 @@ class LiveDataClient:
         try:
             yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
             loop = asyncio.get_event_loop()
-            games = await loop.run_in_executor(
-                None,
-                lambda: leaguegamefinder.LeagueGameFinder(
-                    team_id_nullable=team_id,
-                    date_from_nullable=yesterday,
-                    date_to_nullable=yesterday
-                )
+            games = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: leaguegamefinder.LeagueGameFinder(
+                        team_id_nullable=team_id,
+                        date_from_nullable=yesterday,
+                        date_to_nullable=yesterday,
+                        timeout=self.timeout
+                    )
+                ),
+                timeout=self.timeout + 2
             )
             df = games.get_data_frames()[0]
             return len(df) > 0

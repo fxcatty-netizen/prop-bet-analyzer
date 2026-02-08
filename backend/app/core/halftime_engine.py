@@ -368,24 +368,30 @@ class HalftimeAnalysisEngine:
         """
         Fetch team offensive/defensive ratings from nba_api.
         Uses cache to avoid repeated API calls.
+        Short timeout to prevent hanging on cloud servers.
         """
         if team_id in self._team_ratings_cache:
             return self._team_ratings_cache[team_id]
 
         ratings = TeamRatings(team_id=team_id, team_abbr=team_abbr)
+        api_timeout = 10  # seconds
 
         try:
             from nba_api.stats.endpoints import leaguedashteamstats
 
             loop = asyncio.get_event_loop()
 
-            # Get team stats
-            stats = await loop.run_in_executor(
-                None,
-                lambda: leaguedashteamstats.LeagueDashTeamStats(
-                    season='2024-25',
-                    measure_type_detailed_defense='Advanced'
-                )
+            # Get team stats with timeout
+            stats = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: leaguedashteamstats.LeagueDashTeamStats(
+                        season='2024-25',
+                        measure_type_detailed_defense='Advanced',
+                        timeout=api_timeout
+                    )
+                ),
+                timeout=api_timeout + 2
             )
 
             df = stats.get_data_frames()[0]
@@ -397,12 +403,16 @@ class HalftimeAnalysisEngine:
                 ratings.pace = float(team_row['PACE'].iloc[0]) if 'PACE' in team_row else LEAGUE_AVG_PACE
 
             # Get defensive rankings by opponent stats
-            def_stats = await loop.run_in_executor(
-                None,
-                lambda: leaguedashteamstats.LeagueDashTeamStats(
-                    season='2024-25',
-                    measure_type_detailed_defense='Opponent'
-                )
+            def_stats = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: leaguedashteamstats.LeagueDashTeamStats(
+                        season='2024-25',
+                        measure_type_detailed_defense='Opponent',
+                        timeout=api_timeout
+                    )
+                ),
+                timeout=api_timeout + 2
             )
 
             def_df = def_stats.get_data_frames()[0]
@@ -427,6 +437,8 @@ class HalftimeAnalysisEngine:
                 ratings.def_rank_ast = int(team_def['AST_RANK'].iloc[0]) if 'AST_RANK' in team_def else 15
                 ratings.def_rank_3pm = int(team_def['3PM_RANK'].iloc[0]) if '3PM_RANK' in team_def else 15
 
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching team ratings for {team_abbr} - using defaults")
         except Exception as e:
             logger.warning(f"Could not fetch team ratings for {team_abbr}: {e}")
 
